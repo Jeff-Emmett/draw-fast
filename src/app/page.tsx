@@ -55,6 +55,12 @@ const shapeUtils = [LiveImageShapeUtil]
 const tools = [LiveImageTool]
 
 export default function Home() {
+	// Server-side rendering check
+	if (typeof window === 'undefined') {
+		// Return a minimal placeholder for SSR
+		return <div className="tldraw-wrapper">Loading editor...</div>
+	}
+
 	const onEditorMount = (editor: Editor) => {
 		// We need the editor to think that the live image shape is a frame
 		// @ts-expect-error: patch

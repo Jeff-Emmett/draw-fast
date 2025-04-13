@@ -1,11 +1,21 @@
-import { type } from 'os'
+'use client'
 
-const fileReader = new FileReader()
+import { type } from 'os'
+import { blobToDataUri } from './blob'
 
 let _canvas: HTMLCanvasElement | null = null
 let _ctx: CanvasRenderingContext2D | null = null
 
+function getFileReader() {
+	if (typeof window === 'undefined') return null
+	return new FileReader()
+}
+
 async function fastGetSvgAsString(svg: SVGElement) {
+	if (typeof window === 'undefined') {
+		return ''
+	}
+
 	const clone = svg.cloneNode(true) as SVGGraphicsElement
 
 	svg.setAttribute('width', +svg.getAttribute('width')! + '')
@@ -17,13 +27,13 @@ async function fastGetSvgAsString(svg: SVGElement) {
 		const src = img.getAttribute('xlink:href')
 		if (src) {
 			if (!src.startsWith('data:')) {
-				const blob = await (await fetch(src)).blob()
-				const base64 = await new Promise<string>((resolve, reject) => {
-					fileReader.onload = () => resolve(fileReader.result as string)
-					fileReader.onerror = () => reject(fileReader.error)
-					fileReader.readAsDataURL(blob)
-				})
-				img.setAttribute('xlink:href', base64)
+				try {
+					const blob = await (await fetch(src)).blob()
+					const base64 = await blobToDataUri(blob)
+					img.setAttribute('xlink:href', base64)
+				} catch (error) {
+					console.error('Error processing image:', error)
+				}
 			}
 		}
 	}
@@ -45,6 +55,10 @@ export async function fastGetSvgAsImage(
 		height: number
 	}
 ) {
+	if (typeof window === 'undefined') {
+		return null
+	}
+
 	const svgUrl = URL.createObjectURL(new Blob([svgString], { type: 'image/svg+xml' }))
 
 	if (!_canvas) {
@@ -84,18 +98,13 @@ export async function fastGetSvgAsImage(
 
 	if (!canvas) return null
 
-	const blobPromise = new Promise<Blob | null>((resolve) =>
+	return new Promise<Blob | null>((resolve) =>
 		canvas.toBlob(
 			(blob) => {
-				if (!blob) {
-					resolve(null)
-				}
 				resolve(blob)
 			},
-			'image/' + type,
+			`image/${options.type}`,
 			options.quality
 		)
 	)
-
-	return blobPromise
 }

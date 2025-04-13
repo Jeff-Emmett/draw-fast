@@ -121,6 +121,9 @@ export function useLiveImage(
 	if (!fetchImage) throw new Error('Missing LiveImageProvider')
 
 	useEffect(() => {
+		// Skip on server-side
+		if (typeof window === 'undefined') return;
+		
 		let prevHash = ''
 		let prevPrompt = ''
 
