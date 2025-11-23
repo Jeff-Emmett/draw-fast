@@ -57,18 +57,6 @@ const overrides: TLUiOverrides = {
 		}
 		return tools
 	},
-	// toolbar(_app, toolbar, { tools }) {
-	// 	const frameIndex = toolbar.findIndex((item) => item.id === 'frame')
-	// 	if (frameIndex !== -1) toolbar.splice(frameIndex, 1)
-	// 	const highlighterIndex = toolbar.findIndex((item) => item.id === 'highlight')
-	// 	if (highlighterIndex !== -1) {
-	// 		const highlighterItem = toolbar[highlighterIndex]
-	// 		toolbar.splice(highlighterIndex, 1)
-	// 		toolbar.splice(3, 0, highlighterItem)
-	// 	}
-	// 	toolbar.splice(2, 0, toolbarItem(tools.liveImage))
-	// 	return toolbar
-	// },
 }
 
 const shapeUtils = [LiveImageShapeUtil]
@@ -104,20 +92,16 @@ export default function Home() {
 
 		editor.setStyleForNextShapes(DefaultSizeStyle, 'xl')
 
-		// Add support for new generation types
-		editor.store.registerShapeUtils(
-			TextToImageShapeUtil, 
-			ImageToVideoShapeUtil
-		)
+		// Trigger initial image generation after a short delay
+		setTimeout(() => {
+			editor.emit('update-drawings' as any)
+		}, 100)
 	}
 
 	return (
 		<LiveImageProvider appId="110602490-lcm-sd15-i2i">
 			<main className="tldraw-wrapper">
 				<div className="tldraw-wrapper__inner">
-					<div className="absolute top-4 left-4 z-50">
-						<GenerationTypeSelector value={generationType} onChange={setGenerationType} />
-					</div>
 					<Tldraw
 						persistenceKey="draw-fast"
 						onMount={onEditorMount}
@@ -150,6 +134,13 @@ function SneakySideEffects() {
 		editor.sideEffects.registerAfterDeleteHandler('shape', () => {
 			editor.emit('update-drawings' as any)
 		})
+
+		// Trigger initial generation on mount
+		const timer = setTimeout(() => {
+			editor.emit('update-drawings' as any)
+		}, 500)
+
+		return () => clearTimeout(timer)
 	}, [editor])
 
 	return null

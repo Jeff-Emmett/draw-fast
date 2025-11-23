@@ -29,7 +29,7 @@ export function LiveImageProvider({
 	children,
 	appId,
 	throttleTime = 0,
-	timeoutTime = 5000,
+	timeoutTime = 3000,
 }: {
 	children: React.ReactNode
 	appId: string
@@ -114,7 +114,7 @@ export function LiveImageProvider({
 
 export function useLiveImage(
 	shapeId: TLShapeId,
-	{ throttleTime = 64 }: { throttleTime?: number } = {}
+	{ throttleTime = 32 }: { throttleTime?: number } = {}
 ) {
 	const editor = useEditor()
 	const fetchImage = useContext(LiveImageContext)
@@ -166,7 +166,7 @@ export function useLiveImage(
 
 				const blob = await fastGetSvgAsImage(svgString, {
 					type: 'jpeg',
-					quality: 0.5,
+					quality: 0.3,
 					width: svgStringResult.width,
 					height: svgStringResult.height,
 				})
