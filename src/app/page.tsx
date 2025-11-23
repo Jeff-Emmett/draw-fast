@@ -35,6 +35,26 @@ const overrides: TLUiOverrides = {
 				editor.setCurrentTool('live-image')
 			},
 		}
+		tools.textToImage = {
+			id: 'text-to-image',
+			icon: 'text',
+			label: 'Text to Image',
+			kbd: 't',
+			readonlyOk: false,
+			onSelect: () => {
+				editor.setCurrentTool('text-to-image')
+			},
+		}
+		tools.imageToVideo = {
+			id: 'image-to-video',
+			icon: 'video',
+			label: 'Image to Video',
+			kbd: 'v',
+			readonlyOk: false,
+			onSelect: () => {
+				editor.setCurrentTool('image-to-video')
+			},
+		}
 		return tools
 	},
 	// toolbar(_app, toolbar, { tools }) {
@@ -55,11 +75,7 @@ const shapeUtils = [LiveImageShapeUtil]
 const tools = [LiveImageTool]
 
 export default function Home() {
-	// Server-side rendering check
-	if (typeof window === 'undefined') {
-		// Return a minimal placeholder for SSR
-		return <div className="tldraw-wrapper">Loading editor...</div>
-	}
+	const [generationType, setGenerationType] = useState<'sketch-to-image' | 'text-to-image' | 'image-to-video'>('sketch-to-image')
 
 	const onEditorMount = (editor: Editor) => {
 		// We need the editor to think that the live image shape is a frame
@@ -87,12 +103,21 @@ export default function Home() {
 		}
 
 		editor.setStyleForNextShapes(DefaultSizeStyle, 'xl')
+
+		// Add support for new generation types
+		editor.store.registerShapeUtils(
+			TextToImageShapeUtil, 
+			ImageToVideoShapeUtil
+		)
 	}
 
 	return (
 		<LiveImageProvider appId="110602490-lcm-sd15-i2i">
 			<main className="tldraw-wrapper">
 				<div className="tldraw-wrapper__inner">
+					<div className="absolute top-4 left-4 z-50">
+						<GenerationTypeSelector value={generationType} onChange={setGenerationType} />
+					</div>
 					<Tldraw
 						persistenceKey="draw-fast"
 						onMount={onEditorMount}
