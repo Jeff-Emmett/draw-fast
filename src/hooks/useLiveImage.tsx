@@ -29,7 +29,7 @@ export function LiveImageProvider({
 	children,
 	appId,
 	throttleTime = 0,
-	timeoutTime = 3000,
+	timeoutTime = 5000,
 }: {
 	children: React.ReactNode
 	appId: string
@@ -114,7 +114,7 @@ export function LiveImageProvider({
 
 export function useLiveImage(
 	shapeId: TLShapeId,
-	{ throttleTime = 32 }: { throttleTime?: number } = {}
+	{ throttleTime = 32, activeThrottleTime = 150 }: { throttleTime?: number; activeThrottleTime?: number } = {}
 ) {
 	const editor = useEditor()
 	const fetchImage = useContext(LiveImageContext)
@@ -123,12 +123,22 @@ export function useLiveImage(
 	useEffect(() => {
 		// Skip on server-side
 		if (typeof window === 'undefined') return;
-		
+
 		let prevHash = ''
 		let prevPrompt = ''
 
 		let startedIteration = 0
 		let finishedIteration = 0
+		let isPointerDown = false
+
+		function handlePointerDown() { isPointerDown = true }
+		function handlePointerUp() {
+			isPointerDown = false
+			// Trigger a final update with low throttle on pointer up
+			requestUpdate()
+		}
+		document.addEventListener('pointerdown', handlePointerDown)
+		document.addEventListener('pointerup', handlePointerUp)
 
 		async function updateDrawing() {
 			const shapes = getShapesTouching(shapeId, editor)
@@ -144,6 +154,9 @@ export function useLiveImage(
 			prevHash = hash
 			prevPrompt = frame.props.name
 
+			// Signal generation started
+			editor.emit('generation-state' as any, { shapeId, generating: true })
+
 			try {
 				const svgStringResult = await editor.getSvgString([...shapes], {
 					background: true,
@@ -156,6 +169,7 @@ export function useLiveImage(
 				if (!svgStringResult) {
 					console.warn('No SVG')
 					updateImage(editor, frame.id, null)
+					editor.emit('generation-state' as any, { shapeId, generating: false })
 					return
 				}
 
@@ -176,6 +190,7 @@ export function useLiveImage(
 				if (!blob) {
 					console.warn('No Blob')
 					updateImage(editor, frame.id, null)
+					editor.emit('generation-state' as any, { shapeId, generating: false })
 					return
 				}
 
@@ -201,12 +216,22 @@ export function useLiveImage(
 				if (iteration <= finishedIteration) return
 
 				finishedIteration = iteration
+
+				// Preload the image before displaying it
+				await preloadImage(result.url)
+
+				// cancel if stale after preload:
+				if (iteration < finishedIteration) return
+
 				updateImage(editor, frame.id, result.url)
+				editor.emit('generation-state' as any, { shapeId, generating: false })
 			} catch (e) {
 				const isTimeout = e instanceof Error && e.message === 'Timeout'
 				if (!isTimeout) {
 					console.error(e)
 				}
+
+				editor.emit('generation-state' as any, { shapeId, generating: false })
 
 				// retry if this was the most recent request:
 				if (iteration === startedIteration) {
@@ -218,17 +243,31 @@ export function useLiveImage(
 		let timer: ReturnType<typeof setTimeout> | null = null
 		function requestUpdate() {
 			if (timer !== null) return
+			// Use longer throttle while actively drawing to batch strokes
+			const currentThrottle = isPointerDown ? activeThrottleTime : throttleTime
 			timer = setTimeout(() => {
 				timer = null
 				updateDrawing()
-			}, throttleTime)
+			}, currentThrottle)
 		}
 
 		editor.on('update-drawings' as any, requestUpdate)
 		return () => {
 			editor.off('update-drawings' as any, requestUpdate)
+			document.removeEventListener('pointerdown', handlePointerDown)
+			document.removeEventListener('pointerup', handlePointerUp)
+			if (timer !== null) clearTimeout(timer)
 		}
-	}, [editor, fetchImage, shapeId, throttleTime])
+	}, [editor, fetchImage, shapeId, throttleTime, activeThrottleTime])
+}
+
+function preloadImage(url: string): Promise<void> {
+	return new Promise((resolve) => {
+		const img = new Image()
+		img.onload = () => resolve()
+		img.onerror = () => resolve() // resolve anyway, don't block on preload failure
+		img.src = url
+	})
 }
 
 function updateImage(editor: Editor, shapeId: TLShapeId, url: string | null) {

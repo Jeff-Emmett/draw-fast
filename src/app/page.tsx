@@ -125,22 +125,45 @@ function SneakySideEffects() {
 	const editor = useEditor()
 
 	useEffect(() => {
-		editor.sideEffects.registerAfterChangeHandler('shape', () => {
-			editor.emit('update-drawings' as any)
-		})
-		editor.sideEffects.registerAfterCreateHandler('shape', () => {
-			editor.emit('update-drawings' as any)
-		})
-		editor.sideEffects.registerAfterDeleteHandler('shape', () => {
-			editor.emit('update-drawings' as any)
-		})
+		// Only emit update-drawings when shapes that could affect a live-image frame change.
+		// Skip changes to the live-image shape itself (handled by prompt change detection in useLiveImage).
+		function shouldEmitForShape(shape: { type: string; id: string }) {
+			if (shape.type === 'live-image') {
+				// Do emit for prompt/name changes on the live-image frame
+				return true
+			}
+			// Check if this shape touches any live-image frame
+			const liveFrames = editor.getCurrentPageShapes().filter(s => s.type === 'live-image')
+			for (const frame of liveFrames) {
+				const frameBounds = editor.getShapePageBounds(frame.id)
+				const shapeBounds = editor.getShapePageBounds(shape.id as any)
+				if (frameBounds && shapeBounds && shapeBounds.collides(frameBounds)) {
+					return true
+				}
+			}
+			return false
+		}
 
-		// Trigger initial generation on mount
-		const timer = setTimeout(() => {
-			editor.emit('update-drawings' as any)
-		}, 500)
+		const removers = [
+			editor.sideEffects.registerAfterChangeHandler('shape', (_prev, next) => {
+				if (shouldEmitForShape(next)) {
+					editor.emit('update-drawings' as any)
+				}
+			}),
+			editor.sideEffects.registerAfterCreateHandler('shape', (shape) => {
+				if (shouldEmitForShape(shape)) {
+					editor.emit('update-drawings' as any)
+				}
+			}),
+			editor.sideEffects.registerAfterDeleteHandler('shape', (shape) => {
+				// Always emit on delete — deleted shape may have been touching a frame
+				editor.emit('update-drawings' as any)
+			}),
+		]
 
-		return () => clearTimeout(timer)
+		return () => {
+			removers.forEach(remove => remove())
+		}
 	}, [editor])
 
 	return null
@@ -187,6 +210,7 @@ const LiveImageAsset = track(function LiveImageAsset({ shape }: { shape: LiveIma
 					transform,
 					transformOrigin: 'top left',
 					opacity: shape.opacity,
+					transition: 'opacity 0.15s ease-in-out',
 				}}
 			/>
 		)

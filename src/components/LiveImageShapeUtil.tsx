@@ -21,6 +21,7 @@ import {
 } from '@tldraw/tldraw'
 
 import { useLiveImage } from '@/hooks/useLiveImage'
+import { useEffect, useState } from 'react'
 import { FrameHeading } from './FrameHeading'
 
 // See https://www.fal.ai/models/latent-consistency-sd
@@ -151,8 +152,21 @@ export class LiveImageShapeUtil extends ShapeUtil<LiveImageShape> {
 
 	override component(shape: LiveImageShape) {
 		const editor = useEditor()
+		const [isGenerating, setIsGenerating] = useState(false)
 
 		useLiveImage(shape.id)
+
+		useEffect(() => {
+			function handleGenerationState(event: { shapeId: string; generating: boolean }) {
+				if (event.shapeId === shape.id) {
+					setIsGenerating(event.generating)
+				}
+			}
+			editor.on('generation-state' as any, handleGenerationState)
+			return () => {
+				editor.off('generation-state' as any, handleGenerationState)
+			}
+		}, [editor, shape.id])
 
 		const bounds = this.editor.getShapeGeometry(shape).bounds
 		const assetId = AssetRecordType.createId(shape.id.split(':')[1])
@@ -188,6 +202,23 @@ export class LiveImageShapeUtil extends ShapeUtil<LiveImageShape> {
 							left: shape.props.w,
 							width: shape.props.w,
 							height: shape.props.h,
+							transition: 'opacity 0.15s ease-in-out',
+						}}
+					/>
+				)}
+				{isGenerating && (
+					<div
+						style={{
+							position: 'absolute',
+							top: 0,
+							left: shape.props.overlayResult ? 0 : shape.props.w,
+							width: shape.props.w,
+							height: shape.props.h,
+							pointerEvents: 'none',
+							background: 'linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.15) 50%, transparent 70%)',
+							backgroundSize: '200% 100%',
+							animation: 'shimmer 1.5s ease-in-out infinite',
+							borderRadius: 2,
 						}}
 					/>
 				)}
