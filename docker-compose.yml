@@ -11,8 +11,8 @@ services:
       - "traefik.http.routers.draw-fast.entrypoints=web"
       - "traefik.http.services.draw-fast.loadbalancer.server.port=3000"
     networks:
-      - traefik
+      - traefik-public
 
 networks:
-  traefik:
+  traefik-public:
     external: true
