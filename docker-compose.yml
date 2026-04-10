@@ -1,0 +1,18 @@
+services:
+  draw-fast:
+    build: .
+    container_name: draw-fast
+    restart: unless-stopped
+    environment:
+      - FAL_KEY=${FAL_KEY}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.draw-fast.rule=Host(`draw.jeffemmett.com`)"
+      - "traefik.http.routers.draw-fast.entrypoints=web"
+      - "traefik.http.services.draw-fast.loadbalancer.server.port=3000"
+    networks:
+      - traefik
+
+networks:
+  traefik:
+    external: true
