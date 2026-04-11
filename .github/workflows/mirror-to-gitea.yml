@@ -16,13 +16,33 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Mirror to Gitea
+      - name: Fetch secrets from Infisical
         env:
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-          GITEA_USERNAME: ${{ secrets.GITEA_USERNAME }}
+          INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
+          INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          # Authenticate with Infisical (via Cloudflare Access service token)
+          ACCESS_TOKEN=$(curl -sf -X POST "https://secrets.jeffemmett.com/api/v1/auth/universal-auth/login" \
+            -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+            -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d "{\"clientId\":\"${INFISICAL_CLIENT_ID}\",\"clientSecret\":\"${INFISICAL_CLIENT_SECRET}\"}" \
+            | jq -r '.accessToken')
+
+          # Fetch secrets and export as env vars
+          SECRETS=$(curl -sf "https://secrets.jeffemmett.com/api/v3/secrets/raw?workspaceSlug=github-mirrors&environment=prod&secretPath=/&recursive=true" \
+            -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+            -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}")
+
+          # Export each secret to GITHUB_ENV for subsequent steps
+          echo "$SECRETS" | jq -r '.secrets[] | "\(.secretKey)=\(.secretValue)"' >> "$GITHUB_ENV"
+
+      - name: Mirror to Gitea
         run: |
           REPO_NAME=$(basename $GITHUB_REPOSITORY)
           git remote add gitea https://$GITEA_USERNAME:$GITEA_TOKEN@gitea.jeffemmett.com/jeffemmett/$REPO_NAME.git || true
           git push gitea --all --force
           git push gitea --tags --force
-
