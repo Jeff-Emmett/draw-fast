@@ -4,15 +4,26 @@ services:
     container_name: draw-fast
     restart: unless-stopped
     environment:
-      - FAL_KEY=${FAL_KEY}
+    - INFISICAL_CLIENT_ID=${INFISICAL_CLIENT_ID}
+    - INFISICAL_CLIENT_SECRET=${INFISICAL_CLIENT_SECRET}
+    - INFISICAL_PROJECT_SLUG=draw-fast
+    - INFISICAL_ENV=prod
+    - INFISICAL_URL=http://infisical:8080
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.draw-fast.rule=Host(`draw.jeffemmett.com`)"
-      - "traefik.http.routers.draw-fast.entrypoints=web"
-      - "traefik.http.services.draw-fast.loadbalancer.server.port=3000"
+    - traefik.enable=true
+    - traefik.http.routers.draw-fast.rule=Host(`draw.jeffemmett.com`)
+    - traefik.http.routers.draw-fast.entrypoints=web
+    - traefik.http.services.draw-fast.loadbalancer.server.port=3000
     networks:
-      - traefik-public
-
+    - traefik-public
+    volumes:
+    - /opt/infisical/entrypoint-wrapper.sh:/infisical-entrypoint.sh:ro
+    entrypoint:
+    - /infisical-entrypoint.sh
+    command:
+    - docker-entrypoint.sh
+    - node
+    - server.js
 networks:
   traefik-public:
     external: true
