@@ -2,7 +2,7 @@
 // worker) when GX10 answers >= 500 or cannot be reached.
 
 import { generateImageWithBurst } from '@/lib/gateway'
-import { config, json, limit, limiters, readJson, readPrompt, upstreamError } from '@/lib/routeHelpers'
+import { acquireSlot, config, json, limit, limiters, readJson, readPrompt, upstreamError } from '@/lib/routeHelpers'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -24,7 +24,13 @@ export async function POST(req: Request) {
 	if (!prompt) return json({ error: 'Need a prompt (1-1000 characters).' }, 400)
 	const size = typeof body.size === 'string' && SIZES.has(body.size) ? body.size : '1024x1024'
 
-	const r = await generateImageWithBurst(cfg, { prompt, size }, { signal: req.signal })
-	if (!r.ok) return upstreamError(r.status, r.error)
-	return json({ image: `data:image/png;base64,${r.data.b64}`, model: r.model })
+	const release = acquireSlot(req)
+	if (release instanceof Response) return release
+	try {
+		const r = await generateImageWithBurst(cfg, { prompt, size }, { signal: req.signal })
+		if (!r.ok) return upstreamError(r.status, r.error, 'image')
+		return json({ image: `data:image/png;base64,${r.data.b64}`, model: r.model })
+	} finally {
+		release()
+	}
 }

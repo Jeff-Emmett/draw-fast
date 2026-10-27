@@ -2,7 +2,7 @@
 // submit) and hands the browser OUR job id, which it polls at /api/video/<id>.
 
 import { decodeImageDataUrl, MODELS, submitVideoWithBurst, type VideoSubmit } from '@/lib/gateway'
-import { config, json, limit, limiters, readJson, readPrompt, upstreamError } from '@/lib/routeHelpers'
+import { acquireSlot, config, json, limit, limiters, readJson, readPrompt, upstreamError } from '@/lib/routeHelpers'
 import { putJob } from '@/lib/videoJobs'
 
 export const runtime = 'nodejs'
@@ -27,8 +27,15 @@ export async function POST(req: Request) {
 	const size = typeof body.size === 'string' && SIZES.has(body.size) ? body.size : '768x512'
 
 	const input: VideoSubmit = { prompt, seconds: '4', size, image }
-	const r = await submitVideoWithBurst(cfg, input)
-	if (!r.ok) return upstreamError(r.status, r.error)
+	const release = acquireSlot(req)
+	if (release instanceof Response) return release
+	let r: Awaited<ReturnType<typeof submitVideoWithBurst>>
+	try {
+		r = await submitVideoWithBurst(cfg, input)
+	} finally {
+		release()
+	}
+	if (!r.ok) return upstreamError(r.status, r.error, 'video-submit')
 
 	const id = putJob({
 		gatewayId: r.data.id,

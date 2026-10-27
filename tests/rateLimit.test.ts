@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { BodyTooLargeError, clientIp, RateLimiter, readBodyCapped, SHARED_BUCKET } from '../src/lib/rateLimit.ts'
+import { BodyTooLargeError, clientIp, ConcurrencyLimiter, RateLimiter, readBodyCapped, SHARED_BUCKET } from '../src/lib/rateLimit.ts'
 
 describe('RateLimiter', () => {
 	it('allows a burst of `capacity`, then refuses with Retry-After', () => {
@@ -86,5 +86,25 @@ describe('readBodyCapped', () => {
 		})
 		const req = new Request('http://x/', { method: 'POST', body: stream, duplex: 'half' } as RequestInit)
 		await assert.rejects(readBodyCapped(req, 25), BodyTooLargeError)
+	})
+})
+
+describe('ConcurrencyLimiter (per-IP in-flight cap)', () => {
+	it('allows max in flight per key, frees on release, release is idempotent', () => {
+		const c = new ConcurrencyLimiter(2)
+		const r1 = c.acquire('ip')
+		const r2 = c.acquire('ip')
+		assert.ok(r1 && r2)
+		assert.equal(c.acquire('ip'), null, 'third concurrent request refused')
+		assert.ok(c.acquire('other'), 'other clients unaffected')
+		r1!()
+		r1!() // double release must not free a second slot
+		assert.equal(c.inFlight('ip'), 1)
+		const r3 = c.acquire('ip')
+		assert.ok(r3)
+		assert.equal(c.acquire('ip'), null)
+		r2!()
+		r3!()
+		assert.equal(c.inFlight('ip'), 0)
 	})
 })

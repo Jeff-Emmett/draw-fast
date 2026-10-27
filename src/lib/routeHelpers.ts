@@ -1,8 +1,8 @@
 // Shared pieces for the /api generation routes: rate limiters, JSON parsing with a body
 // cap, and response helpers. Server-only.
 
-import { clientStatusFor, gatewayConfigFromEnv, type GatewayConfig } from '@/lib/gateway'
-import { BodyTooLargeError, clientIp, RateLimiter, readBodyCapped } from '@/lib/rateLimit'
+import { gatewayConfigFromEnv, publicErrorFor, type GatewayConfig } from '@/lib/gateway'
+import { BodyTooLargeError, clientIp, ConcurrencyLimiter, RateLimiter, readBodyCapped } from '@/lib/rateLimit'
 
 // Budgets per client IP. Live sketching fires at most once per ~2 s debounce; t2i and
 // video are explicit clicks. Video costs the most (70-120 s of GX10, or RunPod money).
@@ -11,6 +11,16 @@ export const limiters = {
 	image: new RateLimiter({ capacity: 5, refillPerSec: 1 / 12 }),
 	videoSubmit: new RateLimiter({ capacity: 2, refillPerSec: 1 / 120 }),
 	videoPoll: new RateLimiter({ capacity: 60, refillPerSec: 1 }),
+}
+
+/** At most 2 image/live/video-submit requests IN FLIGHT per client at once. */
+export const inflight = new ConcurrencyLimiter(2)
+
+/** Takes an in-flight slot; returns its release function, or a 429 Response. */
+export function acquireSlot(req: Request): (() => void) | Response {
+	const release = inflight.acquire(clientIp(req.headers))
+	if (release) return release
+	return json({ error: 'You already have generations running — wait for one to finish.' }, 429, { 'Retry-After': '5' })
 }
 
 export const MAX_PROMPT_CHARS = 1000
@@ -54,9 +64,12 @@ export function readPrompt(v: unknown): string | null {
 	return p
 }
 
-/** Maps a failed gateway call to the browser-facing response (never echoes the key). */
-export function upstreamError(status: number, error: string): Response {
-	if (status === 0) return json({ error: 'Generation backend unreachable.' }, 502)
-	if (status === 401 || status === 403) return json({ error: 'Generation backend rejected this server.' }, clientStatusFor(status))
-	return json({ error }, status)
+/**
+ * Maps a failed gateway call to the browser-facing response: a FIXED message per status.
+ * The gateway's own error text is logged server-side only, never forwarded.
+ */
+export function upstreamError(status: number, detail: string, where: string): Response {
+	console.warn(`[draw-fast] gateway ${where} failed: status=${status} ${detail.slice(0, 300)}`)
+	const pub = publicErrorFor(status)
+	return json({ error: pub.error }, pub.status)
 }

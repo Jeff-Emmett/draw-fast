@@ -9,6 +9,9 @@ import {
 	VIDEO_POLL_TIMEOUT_MS,
 	VIDEO_SUBMIT_TIMEOUT_MS,
 	clientStatusFor,
+	gatewayCall,
+	publicErrorFor,
+	publicVideoFailure,
 	decodeImageDataUrl,
 	generateImageWithBurst,
 	gatewayConfigFromEnv,
@@ -242,5 +245,74 @@ describe('time budgets stay under Cloudflare (~100 s) with margin', () => {
 		assert.equal(r.ok, false)
 		assert.equal(r.model, 'rented-image-flux')
 		assert.equal(m.calls.length, 2)
+	})
+})
+
+describe('one deadline covers the BODY too (stalled gateway)', () => {
+	const stalled = () =>
+		new Response(
+			new ReadableStream({
+				start(c) {
+					c.enqueue(new TextEncoder().encode('{"data":[{"b64_json":"iV'))
+					// never closes: headers arrived, body stalls
+				},
+			}),
+			{ status: 200, headers: { 'content-type': 'application/json' } }
+		)
+
+	it('gatewayCall: headers then a stalled body → no answer at the deadline', async () => {
+		const m = mockFetch([stalled])
+		const t0 = Date.now()
+		const raw = await gatewayCall(cfg(m.fetch), '/images/generations', { method: 'POST' }, 50)
+		assert.equal(raw.kind, 'net')
+		assert.ok(Date.now() - t0 < 2000, 'returned near the deadline, did not hang')
+	})
+
+	it('image: local body stalls → treated as no answer → rented once', async () => {
+		const m = mockFetch([stalled, okImage])
+		const r = await generateImageWithBurst(cfg(m.fetch), body, { localTimeoutMs: 50 })
+		assert.equal(r.ok && r.model, 'rented-image-flux')
+		assert.equal(m.calls.length, 2)
+	})
+
+	it('body over maxBytes → refused', async () => {
+		const m = mockFetch([() => new Response(new Uint8Array(100))])
+		const raw = await gatewayCall(cfg(m.fetch), '/x', { method: 'GET' }, 1000, { maxBytes: 10 })
+		assert.equal(raw.kind, 'net')
+	})
+})
+
+describe('browser-facing errors are FIXED text, never the gateway\'s', () => {
+	it('maps each upstream status to a fixed message and a sane status', () => {
+		assert.deepEqual(publicErrorFor(0).status, 502)
+		assert.deepEqual(publicErrorFor(401).status, 502)
+		assert.deepEqual(publicErrorFor(403).status, 502)
+		assert.deepEqual(publicErrorFor(400).status, 400)
+		assert.deepEqual(publicErrorFor(422).status, 400)
+		assert.deepEqual(publicErrorFor(413).status, 413)
+		assert.deepEqual(publicErrorFor(429).status, 429)
+		assert.deepEqual(publicErrorFor(503).status, 503)
+		assert.deepEqual(publicErrorFor(504).status, 504)
+		assert.deepEqual(publicErrorFor(500).status, 502)
+	})
+
+	it('the gateway error text is kept for logs but never in the public message', async () => {
+		const secretish = 'internal: upstream http://10.0.0.5:8188 key=abc stack trace'
+		const m = mockFetch([() => Response.json({ error: { message: secretish } }, { status: 400 })])
+		const r = await generateImageWithBurst(cfg(m.fetch), body)
+		assert.equal(r.ok, false)
+		if (!r.ok) {
+			assert.equal(r.error, secretish, 'detail available server-side for logging')
+			assert.ok(!publicErrorFor(r.status).error.includes('10.0.0.5'))
+		}
+		for (const s of [0, 400, 401, 404, 413, 429, 500, 502, 503, 504]) {
+			assert.ok(!publicErrorFor(s).error.includes('http'), `status ${s}`)
+		}
+	})
+
+	it('video failures: fixed text per code', () => {
+		assert.match(publicVideoFailure('capacity_error'), /capacity/)
+		assert.equal(publicVideoFailure('anything else'), 'Video generation failed.')
+		assert.equal(publicVideoFailure(undefined), 'Video generation failed.')
 	})
 })

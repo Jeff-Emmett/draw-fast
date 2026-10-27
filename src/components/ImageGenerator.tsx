@@ -11,6 +11,8 @@ interface ImageGeneratorProps {
 type Result = { kind: 'image'; url: string } | { kind: 'video'; url: string }
 
 const POLL_MS = 4000
+/** Consecutive transient poll failures tolerated (with backoff) before giving up. */
+const MAX_POLL_FAILURES = 4
 const MAX_POLL_MS = 10 * 60 * 1000
 
 async function errorOf(res: Response): Promise<string> {
@@ -83,12 +85,26 @@ export function ImageGenerator({ generationType }: ImageGeneratorProps) {
 		const { id } = (await res.json()) as { id: string }
 
 		const started = Date.now()
+		let failures = 0
 		while (!cancelled.current) {
 			if (Date.now() - started > MAX_POLL_MS) throw new Error('Video took too long — gave up waiting.')
-			await sleep(POLL_MS)
-			const poll = await fetch(`/api/video/${encodeURIComponent(id)}`, { cache: 'no-store' })
+			// Back off after transient failures: 4 s, 8 s, 16 s, 32 s.
+			await sleep(POLL_MS * 2 ** failures)
+			let poll: Response
+			try {
+				poll = await fetch(`/api/video/${encodeURIComponent(id)}`, { cache: 'no-store' })
+			} catch {
+				if (++failures > MAX_POLL_FAILURES) throw new Error('Lost contact with the server while waiting for the video.')
+				continue
+			}
 			if (poll.status === 429) continue // over the poll budget: just wait another tick
-			if (!poll.ok) throw new Error(await errorOf(poll))
+			if (poll.status === 404) throw new Error('This video job expired or is unknown.')
+			if (!poll.ok) {
+				// A blip (502/503/504 from a stalled gateway poll) must not kill a job that is still rendering.
+				if (++failures > MAX_POLL_FAILURES) throw new Error(await errorOf(poll))
+				continue
+			}
+			failures = 0
 			const job = (await poll.json()) as {
 				status: string
 				progress?: number

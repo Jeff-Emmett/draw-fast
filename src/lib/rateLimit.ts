@@ -61,6 +61,37 @@ export class RateLimiter {
 	}
 }
 
+/**
+ * Caps how many requests per key are IN FLIGHT at once (the token bucket only counts
+ * starts; a slow GX10 job holds a slot for up to its whole time budget).
+ */
+export class ConcurrencyLimiter {
+	private readonly counts = new Map<string, number>()
+	private readonly max: number
+	constructor(max: number) {
+		this.max = max
+	}
+
+	/** A release function, or null when `key` already has `max` requests in flight. */
+	acquire(key: string): (() => void) | null {
+		const n = this.counts.get(key) ?? 0
+		if (n >= this.max) return null
+		this.counts.set(key, n + 1)
+		let released = false
+		return () => {
+			if (released) return
+			released = true
+			const left = (this.counts.get(key) ?? 1) - 1
+			if (left <= 0) this.counts.delete(key)
+			else this.counts.set(key, left)
+		}
+	}
+
+	inFlight(key: string): number {
+		return this.counts.get(key) ?? 0
+	}
+}
+
 export const SHARED_BUCKET = 'shared'
 
 /**

@@ -4,7 +4,7 @@
 // keeps its last image and retries on a later tick.
 
 import { generateImageWithBurst, LIVE_TIMEOUT_MS, MODELS } from '@/lib/gateway'
-import { config, json, limit, limiters, readJson, readPrompt, upstreamError } from '@/lib/routeHelpers'
+import { acquireSlot, config, json, limit, limiters, readJson, readPrompt, upstreamError } from '@/lib/routeHelpers'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -37,11 +37,17 @@ export async function POST(req: Request) {
 	if (!prompt || !size || !image) return json({ error: 'Need prompt, size (WxH, 128-768, /16) and image (PNG/JPEG data URL).' }, 400)
 	const strength = typeof body.strength === 'number' ? Math.min(0.9, Math.max(0.3, body.strength)) : 0.65
 
-	const r = await generateImageWithBurst(
-		cfg,
-		{ prompt, size, image, strength, seed: 42 },
-		{ local: MODELS.localImage, rented: null, localTimeoutMs: LIVE_TIMEOUT_MS, signal: req.signal }
-	)
-	if (!r.ok) return upstreamError(r.status, r.error)
-	return json({ image: `data:image/png;base64,${r.data.b64}` })
+	const release = acquireSlot(req)
+	if (release instanceof Response) return release
+	try {
+		const r = await generateImageWithBurst(
+			cfg,
+			{ prompt, size, image, strength, seed: 42 },
+			{ local: MODELS.localImage, rented: null, localTimeoutMs: LIVE_TIMEOUT_MS, signal: req.signal }
+		)
+		if (!r.ok) return upstreamError(r.status, r.error, 'live')
+		return json({ image: `data:image/png;base64,${r.data.b64}` })
+	} finally {
+		release()
+	}
 }
