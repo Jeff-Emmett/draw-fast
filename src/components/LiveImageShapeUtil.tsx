@@ -20,32 +20,9 @@ import {
 	useIsDarkMode,
 } from '@tldraw/tldraw'
 
-import { useLiveImage } from '@/hooks/useLiveImage'
+import { LiveImageStatus, useLiveImage } from '@/hooks/useLiveImage'
 import { useEffect, useState } from 'react'
 import { FrameHeading } from './FrameHeading'
-
-// See https://www.fal.ai/models/latent-consistency-sd
-
-type Input = {
-	prompt: string
-	image_url: string
-	sync_mode: boolean
-	seed: number
-	strength?: number
-	guidance_scale?: number
-	num_inference_steps?: number
-	enable_safety_checks?: boolean
-}
-
-type Output = {
-	images: Array<{
-		url: string
-		width: number
-		height: number
-	}>
-	seed: number
-	num_inference_steps: number
-}
 
 export type LiveImageShape = TLBaseShape<
 	'live-image',
@@ -152,14 +129,15 @@ export class LiveImageShapeUtil extends ShapeUtil<LiveImageShape> {
 
 	override component(shape: LiveImageShape) {
 		const editor = useEditor()
-		const [isGenerating, setIsGenerating] = useState(false)
+		const [status, setStatus] = useState<LiveImageStatus>('idle')
+		const isGenerating = status === 'rendering'
 
 		useLiveImage(shape.id)
 
 		useEffect(() => {
-			function handleGenerationState(event: { shapeId: string; generating: boolean }) {
+			function handleGenerationState(event: { shapeId: string; status: LiveImageStatus }) {
 				if (event.shapeId === shape.id) {
-					setIsGenerating(event.generating)
+					setStatus(event.status)
 				}
 			}
 			editor.on('generation-state' as any, handleGenerationState)
@@ -221,6 +199,24 @@ export class LiveImageShapeUtil extends ShapeUtil<LiveImageShape> {
 							borderRadius: 2,
 						}}
 					/>
+				)}
+				{status !== 'idle' && (
+					<div
+						style={{
+							position: 'absolute',
+							top: shape.props.h + 6,
+							left: shape.props.overlayResult ? 0 : shape.props.w,
+							fontSize: 12,
+							color: theme.text,
+							opacity: 0.7,
+							pointerEvents: 'none',
+							transform: 'scale(var(--tl-scale))',
+							transformOrigin: 'top left',
+							whiteSpace: 'nowrap',
+						}}
+					>
+						{status === 'rendering' ? 'rendering…' : 'GPU busy — will retry…'}
+					</div>
 				)}
 				<TldrawUiButton
 					type="icon"

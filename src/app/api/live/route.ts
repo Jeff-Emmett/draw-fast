@@ -1,0 +1,47 @@
+// Live "draw → image": debounced img2img of the current sketch.
+// LOCAL ONLY (local-image-flux): continuous sketching must never burn RunPod money, so
+// there is no rented burst here. A 503 (GX10 has no room) is passed through; the client
+// keeps its last image and retries on a later tick.
+
+import { generateImageWithBurst, MODELS } from '@/lib/gateway'
+import { config, json, limit, limiters, readJson, readPrompt, upstreamError } from '@/lib/routeHelpers'
+
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+
+const MAX_BODY = 2 * 1024 * 1024 // a 512px sketch PNG as a data URL is well under this
+const SIZE_RE = /^(\d{2,3})x(\d{2,3})$/
+
+function validSize(v: unknown): string | null {
+	if (typeof v !== 'string') return null
+	const m = SIZE_RE.exec(v)
+	if (!m) return null
+	const w = Number(m[1])
+	const h = Number(m[2])
+	const ok = (n: number) => n >= 128 && n <= 768 && n % 16 === 0
+	return ok(w) && ok(h) ? v : null
+}
+
+export async function POST(req: Request) {
+	const limited = limit(limiters.live, req)
+	if (limited) return limited
+	const cfg = config()
+	if (cfg instanceof Response) return cfg
+
+	const body = await readJson(req, MAX_BODY)
+	if (body instanceof Response) return body
+
+	const prompt = readPrompt(body.prompt)
+	const size = validSize(body.size)
+	const image = typeof body.image === 'string' && /^data:image\/(png|jpeg);base64,/.test(body.image) ? body.image : null
+	if (!prompt || !size || !image) return json({ error: 'Need prompt, size (WxH, 128-768, /16) and image (PNG/JPEG data URL).' }, 400)
+	const strength = typeof body.strength === 'number' ? Math.min(0.9, Math.max(0.3, body.strength)) : 0.65
+
+	const r = await generateImageWithBurst(
+		cfg,
+		{ prompt, size, image, strength, seed: 42 },
+		{ local: MODELS.localImage, rented: null, signal: req.signal }
+	)
+	if (!r.ok) return upstreamError(r.status, r.error)
+	return json({ image: `data:image/png;base64,${r.data.b64}` })
+}
