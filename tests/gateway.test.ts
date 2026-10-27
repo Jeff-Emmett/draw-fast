@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+	BROWSER_REQUEST_BUDGET_MS,
+	LIVE_TIMEOUT_MS,
+	LOCAL_TIMEOUT_MS,
+	RENTED_TIMEOUT_MS,
+	VIDEO_CONTENT_TIMEOUT_MS,
+	VIDEO_POLL_TIMEOUT_MS,
+	VIDEO_SUBMIT_TIMEOUT_MS,
 	clientStatusFor,
 	decodeImageDataUrl,
 	generateImageWithBurst,
@@ -202,5 +209,38 @@ describe('video submit: malformed 200 is not burstable', () => {
 		assert.equal(r.ok, false)
 		assert.equal(r.status, 502)
 		assert.equal(m.calls.length, 1)
+	})
+})
+
+describe('time budgets stay under Cloudflare (~100 s) with margin', () => {
+	it('every route worst case < BROWSER_REQUEST_BUDGET_MS (90 s)', () => {
+		assert.equal(BROWSER_REQUEST_BUDGET_MS, 90_000)
+		assert.ok(LOCAL_TIMEOUT_MS + RENTED_TIMEOUT_MS < BROWSER_REQUEST_BUDGET_MS, '/api/image local+rented')
+		assert.ok(LOCAL_TIMEOUT_MS >= 25_000, 'local must outlast GX10 ~20 s refusal')
+		assert.ok(LIVE_TIMEOUT_MS < BROWSER_REQUEST_BUDGET_MS, '/api/live')
+		assert.ok(2 * VIDEO_SUBMIT_TIMEOUT_MS < BROWSER_REQUEST_BUDGET_MS, '/api/video submit + burst submit')
+		assert.ok(VIDEO_POLL_TIMEOUT_MS + VIDEO_SUBMIT_TIMEOUT_MS < BROWSER_REQUEST_BUDGET_MS, '/api/video/:id poll + burst')
+		assert.ok(VIDEO_CONTENT_TIMEOUT_MS < BROWSER_REQUEST_BUDGET_MS, '/api/video/:id/content first byte')
+	})
+
+	it('defaults are wired: a hung local is abandoned at LOCAL_TIMEOUT_MS, rented at RENTED_TIMEOUT_MS', async (t) => {
+		t.mock.timers.enable({ apis: ['setTimeout'] })
+		const hang: (c: Call) => Promise<Response> = (c) =>
+			new Promise((_, reject) => c.init!.signal!.addEventListener('abort', () => reject(new Error('aborted'))))
+		const m = mockFetch([hang, hang])
+		const p = generateImageWithBurst(cfg(m.fetch), body)
+		const flush = () => new Promise((r) => setImmediate(r))
+		await flush()
+		t.mock.timers.tick(LOCAL_TIMEOUT_MS - 1)
+		await flush()
+		assert.equal(m.calls.length, 1, 'still on local just before its budget')
+		t.mock.timers.tick(1)
+		await flush()
+		assert.equal(m.calls.length, 2, 'rented starts exactly at the local budget')
+		t.mock.timers.tick(RENTED_TIMEOUT_MS)
+		const r = await p
+		assert.equal(r.ok, false)
+		assert.equal(r.model, 'rented-image-flux')
+		assert.equal(m.calls.length, 2)
 	})
 })

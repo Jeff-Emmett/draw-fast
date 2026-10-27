@@ -61,22 +61,17 @@ export class RateLimiter {
 	}
 }
 
+export const SHARED_BUCKET = 'shared'
+
 /**
- * Client IP behind Cloudflare tunnel → Traefik. Cloudflare sets cf-connecting-ip and
- * overwrites any client-supplied value; x-forwarded-for / x-real-ip are fallbacks for
- * non-CF paths (local dev). Unknown → one shared 'unknown' bucket (fails closed-ish).
+ * Rate-limit key. The app is reached ONLY via the Cloudflare tunnel → Traefik, and
+ * Cloudflare sets cf-connecting-ip (overwriting any client-supplied value). That is the
+ * only header trusted: x-forwarded-for / x-real-ip are client-spoofable, so trusting them
+ * would let one client mint unlimited buckets. Absent → one shared bucket for everyone.
  */
 export function clientIp(headers: Headers): string {
-	const cf = headers.get('cf-connecting-ip')
-	if (cf) return cf.trim()
-	const xff = headers.get('x-forwarded-for')
-	if (xff) {
-		const first = xff.split(',')[0]?.trim()
-		if (first) return first
-	}
-	const real = headers.get('x-real-ip')
-	if (real) return real.trim()
-	return 'unknown'
+	const cf = headers.get('cf-connecting-ip')?.trim()
+	return cf || SHARED_BUCKET
 }
 
 export class BodyTooLargeError extends Error {

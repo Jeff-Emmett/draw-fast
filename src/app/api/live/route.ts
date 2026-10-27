@@ -3,7 +3,7 @@
 // there is no rented burst here. A 503 (GX10 has no room) is passed through; the client
 // keeps its last image and retries on a later tick.
 
-import { generateImageWithBurst, MODELS } from '@/lib/gateway'
+import { generateImageWithBurst, LIVE_TIMEOUT_MS, MODELS } from '@/lib/gateway'
 import { config, json, limit, limiters, readJson, readPrompt, upstreamError } from '@/lib/routeHelpers'
 
 export const runtime = 'nodejs'
@@ -40,7 +40,7 @@ export async function POST(req: Request) {
 	const r = await generateImageWithBurst(
 		cfg,
 		{ prompt, size, image, strength, seed: 42 },
-		{ local: MODELS.localImage, rented: null, signal: req.signal }
+		{ local: MODELS.localImage, rented: null, localTimeoutMs: LIVE_TIMEOUT_MS, signal: req.signal }
 	)
 	if (!r.ok) return upstreamError(r.status, r.error)
 	return json({ image: `data:image/png;base64,${r.data.b64}` })

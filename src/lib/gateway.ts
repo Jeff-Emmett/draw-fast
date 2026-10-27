@@ -17,8 +17,23 @@ export const MODELS = {
 	rentedVideo: 'rented-video-ltxv',
 } as const
 
-export const LOCAL_TIMEOUT_MS = 70_000
-export const RENTED_TIMEOUT_MS = 85_000
+// ── Time budgets ───────────────────────────────────────────────────────────────
+// Every browser request goes through Cloudflare, which answers 524 after ~100 s. So the
+// WORST CASE of each route (all its sequential gateway calls) must stay under 90 s.
+// GX10 refuses in ~20 s when it has no room, so 35 s is enough for a refusal; a slow but
+// working local job is abandoned in favour of the rented lane — accepted trade-off.
+export const BROWSER_REQUEST_BUDGET_MS = 90_000
+/** /api/image: local, then (on >= 500 / network / timeout) rented once. */
+export const LOCAL_TIMEOUT_MS = 35_000
+export const RENTED_TIMEOUT_MS = 50_000
+/** /api/live: local only, short — the sketch will have moved on anyway. */
+export const LIVE_TIMEOUT_MS = 40_000
+/** Video submit answers at once with a job id; a burst is two submits. */
+export const VIDEO_SUBMIT_TIMEOUT_MS = 30_000
+/** One status poll; a capacity_error burst adds one rented submit to the same request. */
+export const VIDEO_POLL_TIMEOUT_MS = 25_000
+/** Time to the first byte of the MP4 (the body then streams). */
+export const VIDEO_CONTENT_TIMEOUT_MS = 60_000
 
 export interface GatewayConfig {
 	baseUrl: string
@@ -186,7 +201,7 @@ export async function submitVideo(
 	cfg: GatewayConfig,
 	model: string,
 	req: VideoSubmit,
-	timeoutMs = 60_000
+	timeoutMs = VIDEO_SUBMIT_TIMEOUT_MS
 ): Promise<GatewayResult<VideoJob>> {
 	const form = new FormData()
 	form.set('model', model)
@@ -223,7 +238,7 @@ export function shouldBurstFailedJob(model: string, job: VideoJob): boolean {
 export async function getVideo(cfg: GatewayConfig, id: string): Promise<GatewayResult<VideoJob>> {
 	let res: Response
 	try {
-		res = await fetchWithTimeout(cfg, `/videos/${encodeURIComponent(id)}`, { method: 'GET' }, 30_000)
+		res = await fetchWithTimeout(cfg, `/videos/${encodeURIComponent(id)}`, { method: 'GET' }, VIDEO_POLL_TIMEOUT_MS)
 	} catch (e) {
 		return { ok: false, status: 0, error: e instanceof Error ? e.message : 'network error', model: '' }
 	}
@@ -234,7 +249,7 @@ export async function getVideo(cfg: GatewayConfig, id: string): Promise<GatewayR
 }
 
 export async function getVideoContent(cfg: GatewayConfig, id: string): Promise<Response> {
-	return fetchWithTimeout(cfg, `/videos/${encodeURIComponent(id)}/content`, { method: 'GET' }, 90_000)
+	return fetchWithTimeout(cfg, `/videos/${encodeURIComponent(id)}/content`, { method: 'GET' }, VIDEO_CONTENT_TIMEOUT_MS)
 }
 
 // ── Input helpers ──────────────────────────────────────────────────────────────

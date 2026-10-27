@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { BodyTooLargeError, clientIp, RateLimiter, readBodyCapped } from '../src/lib/rateLimit.ts'
+import { BodyTooLargeError, clientIp, RateLimiter, readBodyCapped, SHARED_BUCKET } from '../src/lib/rateLimit.ts'
 
 describe('RateLimiter', () => {
 	it('allows a burst of `capacity`, then refuses with Retry-After', () => {
@@ -48,11 +48,21 @@ describe('RateLimiter', () => {
 })
 
 describe('clientIp', () => {
-	it('prefers cf-connecting-ip, then first x-forwarded-for, then x-real-ip', () => {
-		assert.equal(clientIp(new Headers({ 'cf-connecting-ip': '9.9.9.9', 'x-forwarded-for': '1.1.1.1' })), '9.9.9.9')
-		assert.equal(clientIp(new Headers({ 'x-forwarded-for': '1.1.1.1, 10.0.0.1' })), '1.1.1.1')
-		assert.equal(clientIp(new Headers({ 'x-real-ip': '2.2.2.2' })), '2.2.2.2')
-		assert.equal(clientIp(new Headers()), 'unknown')
+	it('trusts ONLY cf-connecting-ip', () => {
+		assert.equal(clientIp(new Headers({ 'cf-connecting-ip': ' 9.9.9.9 ', 'x-forwarded-for': '1.1.1.1' })), '9.9.9.9')
+	})
+
+	it('never trusts spoofable x-forwarded-for / x-real-ip: absent CF header → one shared bucket', () => {
+		assert.equal(clientIp(new Headers({ 'x-forwarded-for': '1.1.1.1, 10.0.0.1' })), SHARED_BUCKET)
+		assert.equal(clientIp(new Headers({ 'x-real-ip': '2.2.2.2' })), SHARED_BUCKET)
+		assert.equal(clientIp(new Headers({ 'cf-connecting-ip': '' })), SHARED_BUCKET)
+		assert.equal(clientIp(new Headers()), SHARED_BUCKET)
+	})
+
+	it('rotating x-forwarded-for does not escape the limit', () => {
+		const rl = new RateLimiter({ capacity: 1, refillPerSec: 0.001, now: () => 0 })
+		assert.equal(rl.take(clientIp(new Headers({ 'x-forwarded-for': '1.1.1.1' }))).allowed, true)
+		assert.equal(rl.take(clientIp(new Headers({ 'x-forwarded-for': '3.3.3.3' }))).allowed, false)
 	})
 })
 
