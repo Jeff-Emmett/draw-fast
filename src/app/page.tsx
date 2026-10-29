@@ -3,8 +3,6 @@
 
 import { LiveImageShape, LiveImageShapeUtil } from '@/components/LiveImageShapeUtil'
 import { LiveImageTool, MakeLiveButton } from '@/components/LiveImageTool'
-import { LiveImageProvider } from '@/hooks/useLiveImage'
-import * as fal from '@fal-ai/serverless-client'
 import {
 	AssetRecordType,
 	DefaultSizeStyle,
@@ -16,12 +14,6 @@ import {
 } from '@tldraw/tldraw'
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-
-fal.config({
-	requestMiddleware: fal.withProxy({
-		targetUrl: '/api/fal/proxy',
-	}),
-})
 
 const overrides: TLUiOverrides = {
 	tools(editor, tools) {
@@ -99,25 +91,23 @@ export default function Home() {
 	}
 
 	return (
-		<LiveImageProvider appId="110602490-lcm-sd15-i2i">
-			<main className="tldraw-wrapper">
-				<div className="tldraw-wrapper__inner">
-					<Tldraw
-						persistenceKey="draw-fast"
-						onMount={onEditorMount}
-						shapeUtils={shapeUtils}
-						tools={tools}
-						components={{
-							SharePanel: MakeLiveButton,
-						}}
-						overrides={overrides}
-					>
-						<SneakySideEffects />
-						<LiveImageAssets />
-					</Tldraw>
-				</div>
-			</main>
-		</LiveImageProvider>
+		<main className="tldraw-wrapper">
+			<div className="tldraw-wrapper__inner">
+				<Tldraw
+					persistenceKey="draw-fast"
+					onMount={onEditorMount}
+					shapeUtils={shapeUtils}
+					tools={tools}
+					components={{
+						SharePanel: MakeLiveButton,
+					}}
+					overrides={overrides}
+				>
+					<SneakySideEffects />
+					<LiveImageAssets />
+				</Tldraw>
+			</div>
+		</main>
 	)
 }
 

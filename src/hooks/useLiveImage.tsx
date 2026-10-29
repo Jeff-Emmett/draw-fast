@@ -1,282 +1,171 @@
 import { LiveImageShape } from '@/components/LiveImageShapeUtil'
 import { fastGetSvgAsImage } from '@/utils/screenshot'
-import * as fal from '@fal-ai/serverless-client'
-import {
-	AssetRecordType,
-	Editor,
-	FileHelpers,
-	TLShape,
-	TLShapeId,
-	getHashForObject,
-	useEditor,
-} from '@tldraw/tldraw'
-import { createContext, useContext, useEffect, useState } from 'react'
-import { v4 as uuid } from 'uuid'
+import { AssetRecordType, Editor, FileHelpers, TLShape, TLShapeId, getHashForObject, useEditor } from '@tldraw/tldraw'
+import { useEffect } from 'react'
 
-type LiveImageResult = { url: string }
-type LiveImageRequest = {
-	prompt: string
-	image_url: string
-	sync_mode: boolean
-	strength: number
-	seed: number
-	enable_safety_checks: boolean
-}
-type LiveImageContextType = null | ((req: LiveImageRequest) => Promise<LiveImageResult>)
-const LiveImageContext = createContext<LiveImageContextType>(null)
+// Live "draw → image" on our own compute (rspace TASK-1727).
+//
+// There is no realtime LCM stream on our stack, so this is debounced img2img through
+// /api/live (local-image-flux on GX10 only — never the rented burst lane):
+//   - fires DEBOUNCE_MS after the last change to the sketch or prompt;
+//   - latest wins: a newer render aborts the one in flight (at most one per shape);
+//   - on failure (503 = GX10 busy, 429, network) the last image stays and a retry is
+//     scheduled with backoff; any new stroke resets the backoff.
 
-export function LiveImageProvider({
-	children,
-	appId,
-	throttleTime = 0,
-	timeoutTime = 5000,
-}: {
-	children: React.ReactNode
-	appId: string
-	throttleTime?: number
-	timeoutTime?: number
-}) {
-	const [count, setCount] = useState(0)
-	const [fetchImage, setFetchImage] = useState<{ current: LiveImageContextType }>({ current: null })
+export type LiveImageStatus = 'idle' | 'rendering' | 'busy'
 
-	useEffect(() => {
-		const requestsById = new Map<
-			string,
-			{
-				resolve: (result: LiveImageResult) => void
-				reject: (err: unknown) => void
-				timer: ReturnType<typeof setTimeout>
-			}
-		>()
+const DEBOUNCE_MS = 1750
+const MAX_SIDE = 512
+const MAX_BACKOFF_MS = 30_000
 
-		const { send, close } = fal.realtime.connect(appId, {
-			connectionKey: 'fal-realtime-example',
-			clientOnly: false,
-			throttleInterval: throttleTime,
-			onError: (error) => {
-				console.error(error)
-				// force re-connect
-				setTimeout(() => {
-					setCount((count) => count + 1)
-				}, 500)
-			},
-			onResult: (result) => {
-				if (result.images && result.images[0]) {
-					const id = result.request_id
-					const request = requestsById.get(id)
-					if (request) {
-						request.resolve(result.images[0])
-					}
-				}
-			},
-		})
-
-		setFetchImage({
-			current: (req) => {
-				return new Promise((resolve, reject) => {
-					const id = uuid()
-					const timer = setTimeout(() => {
-						requestsById.delete(id)
-						reject(new Error('Timeout'))
-					}, timeoutTime)
-					requestsById.set(id, {
-						resolve: (res) => {
-							resolve(res)
-							clearTimeout(timer)
-						},
-						reject: (err) => {
-							reject(err)
-							clearTimeout(timer)
-						},
-						timer,
-					})
-					send({ ...req, request_id: id })
-				})
-			},
-		})
-
-		return () => {
-			for (const request of requestsById.values()) {
-				request.reject(new Error('Connection closed'))
-			}
-			try {
-				close()
-			} catch (e) {
-				// noop
-			}
-		}
-	}, [appId, count, throttleTime, timeoutTime])
-
-	return (
-		<LiveImageContext.Provider value={fetchImage.current}>{children}</LiveImageContext.Provider>
-	)
+/** Longest side → 512, both sides multiples of 16 (what /api/live accepts). */
+export function liveRenderSize(w: number, h: number) {
+	const scale = MAX_SIDE / Math.max(w, h, 1)
+	const round = (n: number) => Math.min(768, Math.max(128, Math.round((n * scale) / 16) * 16))
+	return { w: round(w), h: round(h) }
 }
 
-export function useLiveImage(
-	shapeId: TLShapeId,
-	{ throttleTime = 32, activeThrottleTime = 150 }: { throttleTime?: number; activeThrottleTime?: number } = {}
-) {
+export function useLiveImage(shapeId: TLShapeId, { debounceMs = DEBOUNCE_MS }: { debounceMs?: number } = {}) {
 	const editor = useEditor()
-	const fetchImage = useContext(LiveImageContext)
-	if (!fetchImage) throw new Error('Missing LiveImageProvider')
 
 	useEffect(() => {
-		// Skip on server-side
-		if (typeof window === 'undefined') return;
+		if (typeof window === 'undefined') return
 
-		let prevHash = ''
-		let prevPrompt = ''
+		let renderedKey = '' // key of the sketch last rendered (or being rendered)
+		let inflight: AbortController | null = null
+		let timer: ReturnType<typeof setTimeout> | null = null
+		let backoffMs = 0
+		let disposed = false
 
-		let startedIteration = 0
-		let finishedIteration = 0
-		let isPointerDown = false
+		const setStatus = (status: LiveImageStatus) =>
+			editor.emit('generation-state' as any, { shapeId, status, generating: status === 'rendering' })
 
-		function handlePointerDown() { isPointerDown = true }
-		function handlePointerUp() {
-			isPointerDown = false
-			// Trigger a final update with low throttle on pointer up
-			requestUpdate()
+		function schedule(delay: number) {
+			if (disposed) return
+			if (timer !== null) clearTimeout(timer)
+			timer = setTimeout(() => {
+				timer = null
+				void render()
+			}, delay)
 		}
-		document.addEventListener('pointerdown', handlePointerDown)
-		document.addEventListener('pointerup', handlePointerUp)
 
-		async function updateDrawing() {
+		function onChange() {
+			backoffMs = 0
+			schedule(debounceMs)
+		}
+
+		function retryLater(retryAfterSec?: number) {
+			renderedKey = '' // the sketch is still unrendered
+			backoffMs = Math.min(MAX_BACKOFF_MS, Math.max(backoffMs * 2, debounceMs * 2))
+			const delay = retryAfterSec ? Math.max(backoffMs, retryAfterSec * 1000) : backoffMs
+			setStatus('busy')
+			schedule(delay)
+		}
+
+		async function render() {
+			const frame = editor.getShape<LiveImageShape>(shapeId)
+			if (!frame) return
 			const shapes = getShapesTouching(shapeId, editor)
-			const frame = editor.getShape<LiveImageShape>(shapeId)!
+			const key = getHashForObject([...shapes]) + `|${frame.props.name}|${frame.props.w}x${frame.props.h}`
+			if (key === renderedKey) return
+			// Empty frame, no prompt: nothing to draw from. Don't spend GPU on every page load.
+			if (shapes.length === 0 && !frame.props.name) {
+				inflight?.abort()
+				renderedKey = key
+				setStatus('idle')
+				return
+			}
 
-			const hash = getHashForObject([...shapes])
-			const frameName = frame.props.name
-			if (hash === prevHash && frameName === prevPrompt) return
-
-			startedIteration += 1
-			const iteration = startedIteration
-
-			prevHash = hash
-			prevPrompt = frame.props.name
-
-			// Signal generation started
-			editor.emit('generation-state' as any, { shapeId, generating: true })
+			inflight?.abort() // latest wins
+			const ctrl = new AbortController()
+			inflight = ctrl
+			renderedKey = key
+			setStatus('rendering')
 
 			try {
-				const svgStringResult = await editor.getSvgString([...shapes], {
+				const size = liveRenderSize(frame.props.w, frame.props.h)
+				const svg = await editor.getSvgString([...shapes], {
 					background: true,
 					padding: 0,
 					darkMode: editor.user.getIsDarkMode(),
 					bounds: editor.getShapePageBounds(shapeId)!,
-					scale: 512 / frame.props.w,
+					scale: size.w / frame.props.w,
 				})
-
-				if (!svgStringResult) {
-					console.warn('No SVG')
-					updateImage(editor, frame.id, null)
-					editor.emit('generation-state' as any, { shapeId, generating: false })
+				if (ctrl.signal.aborted) return
+				if (!svg) {
+					updateImage(editor, shapeId, null)
+					setStatus('idle')
 					return
 				}
 
-				const svgString = svgStringResult.svg
-
-				// cancel if stale:
-				if (iteration <= finishedIteration) return
-
-				const blob = await fastGetSvgAsImage(svgString, {
-					type: 'jpeg',
-					quality: 0.3,
-					width: svgStringResult.width,
-					height: svgStringResult.height,
-				})
-
-				if (iteration <= finishedIteration) return
-
+				const blob = await fastGetSvgAsImage(svg.svg, { type: 'png', quality: 1, width: size.w, height: size.h })
+				if (ctrl.signal.aborted) return
 				if (!blob) {
-					console.warn('No Blob')
-					updateImage(editor, frame.id, null)
-					editor.emit('generation-state' as any, { shapeId, generating: false })
+					setStatus('idle')
 					return
 				}
+				const image = await FileHelpers.blobToDataUrl(blob)
+				if (ctrl.signal.aborted) return
 
-				const imageUrl = await FileHelpers.blobToDataUrl(blob)
-
-				// cancel if stale:
-				if (iteration <= finishedIteration) return
-
-				const prompt = frameName
-					? frameName + ' hd award-winning impressive'
+				const prompt = frame.props.name
+					? frame.props.name + ' hd award-winning impressive'
 					: 'A random image that is safe for work and not surprising—something boring like a city or shoe watercolor'
 
-				const result = await fetchImage!({
-					prompt,
-					image_url: imageUrl,
-					sync_mode: true,
-					strength: 0.65,
-					seed: 42,
-					enable_safety_checks: false,
+				const res = await fetch('/api/live', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ prompt, image, size: `${size.w}x${size.h}`, strength: 0.65 }),
+					signal: ctrl.signal,
 				})
-
-				// cancel if stale:
-				if (iteration <= finishedIteration) return
-
-				finishedIteration = iteration
-
-				// Preload the image before displaying it
-				await preloadImage(result.url)
-
-				// cancel if stale after preload:
-				if (iteration < finishedIteration) return
-
-				updateImage(editor, frame.id, result.url)
-				editor.emit('generation-state' as any, { shapeId, generating: false })
+				if (ctrl.signal.aborted) return
+				if (!res.ok) {
+					// 4xx other than 429 is our own bad request: don't hammer, wait for a change.
+					if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+						console.warn('live render rejected', res.status)
+						setStatus('idle')
+						return
+					}
+					retryLater(Number(res.headers.get('retry-after')) || undefined)
+					return
+				}
+				const { image: url } = (await res.json()) as { image: string }
+				await preloadImage(url)
+				if (ctrl.signal.aborted || disposed) return
+				updateImage(editor, shapeId, url)
+				backoffMs = 0
+				setStatus('idle')
 			} catch (e) {
-				const isTimeout = e instanceof Error && e.message === 'Timeout'
-				if (!isTimeout) {
-					console.error(e)
-				}
-
-				editor.emit('generation-state' as any, { shapeId, generating: false })
-
-				// retry if this was the most recent request:
-				if (iteration === startedIteration) {
-					requestUpdate()
-				}
+				if (ctrl.signal.aborted || disposed) return
+				console.warn('live render failed', e)
+				retryLater()
+			} finally {
+				if (inflight === ctrl) inflight = null
 			}
 		}
 
-		let timer: ReturnType<typeof setTimeout> | null = null
-		function requestUpdate() {
-			if (timer !== null) return
-			// Use longer throttle while actively drawing to batch strokes
-			const currentThrottle = isPointerDown ? activeThrottleTime : throttleTime
-			timer = setTimeout(() => {
-				timer = null
-				updateDrawing()
-			}, currentThrottle)
-		}
-
-		editor.on('update-drawings' as any, requestUpdate)
+		editor.on('update-drawings' as any, onChange)
 		return () => {
-			editor.off('update-drawings' as any, requestUpdate)
-			document.removeEventListener('pointerdown', handlePointerDown)
-			document.removeEventListener('pointerup', handlePointerUp)
+			disposed = true
+			editor.off('update-drawings' as any, onChange)
 			if (timer !== null) clearTimeout(timer)
+			inflight?.abort()
 		}
-	}, [editor, fetchImage, shapeId, throttleTime, activeThrottleTime])
+	}, [editor, shapeId, debounceMs])
 }
 
 function preloadImage(url: string): Promise<void> {
 	return new Promise((resolve) => {
 		const img = new Image()
 		img.onload = () => resolve()
-		img.onerror = () => resolve() // resolve anyway, don't block on preload failure
+		img.onerror = () => resolve() // don't block on preload failure
 		img.src = url
 	})
 }
 
 function updateImage(editor: Editor, shapeId: TLShapeId, url: string | null) {
 	const shape = editor.getShape<LiveImageShape>(shapeId)
-	if (!shape) {
-		return
-	}
+	if (!shape) return
 	const id = AssetRecordType.createId(shape.id.split(':')[1])
-
 	const asset = editor.getAsset(id)
 
 	if (!asset) {
@@ -290,7 +179,7 @@ function updateImage(editor: Editor, shapeId: TLShapeId, url: string | null) {
 					h: shape.props.h,
 					src: url,
 					isAnimated: false,
-					mimeType: 'image/jpeg',
+					mimeType: 'image/png',
 				},
 			}),
 		])
@@ -299,35 +188,20 @@ function updateImage(editor: Editor, shapeId: TLShapeId, url: string | null) {
 			{
 				...asset,
 				type: 'image',
-				props: {
-					...asset.props,
-					w: shape.props.w,
-					h: shape.props.h,
-					src: url,
-				},
+				props: { ...asset.props, w: shape.props.w, h: shape.props.h, src: url },
 			},
 		])
 	}
 }
 
 function getShapesTouching(shapeId: TLShapeId, editor: Editor) {
-	const shapeIdsOnPage = editor.getCurrentPageShapeIds()
 	const shapesTouching: TLShape[] = []
 	const targetBounds = editor.getShapePageBounds(shapeId)
 	if (!targetBounds) return shapesTouching
-	for (const id of [...shapeIdsOnPage]) {
+	for (const id of [...editor.getCurrentPageShapeIds()]) {
 		if (id === shapeId) continue
-		const bounds = editor.getShapePageBounds(id)!
-		if (bounds.collides(targetBounds)) {
-			shapesTouching.push(editor.getShape(id)!)
-		}
+		const bounds = editor.getShapePageBounds(id)
+		if (bounds && bounds.collides(targetBounds)) shapesTouching.push(editor.getShape(id)!)
 	}
 	return shapesTouching
-}
-
-function downloadDataURLAsFile(dataUrl: string, filename: string) {
-	const link = document.createElement('a')
-	link.href = dataUrl
-	link.download = filename
-	link.click()
 }
