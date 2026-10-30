@@ -13,6 +13,11 @@ export const DEFAULT_BASE_URL = 'https://llm.jeffemmett.com/v1'
 export const MODELS = {
 	localImage: 'local-image-flux',
 	rentedImage: 'rented-image-flux',
+	/** /api/live frames: FLUX.2 klein 4B reference edits on the warm rspace-media-live RunPod
+	 *  endpoint (rspace TASK-1727.10; Jeff 2026-10-30: "runpod is fine while drawing is active") */
+	liveImage: 'rented-image-live',
+	/** the same model on GX10, when the live endpoint cannot answer (6-20 s a frame there) */
+	liveFallback: 'local-image-klein4b',
 	localVideo: 'local-video-ltxv',
 	rentedVideo: 'rented-video-ltxv',
 } as const
@@ -26,8 +31,10 @@ export const BROWSER_REQUEST_BUDGET_MS = 90_000
 /** /api/image: local, then (on >= 500 / network / timeout) rented once. */
 export const LOCAL_TIMEOUT_MS = 35_000
 export const RENTED_TIMEOUT_MS = 50_000
-/** /api/live: local only, short — the sketch will have moved on anyway. */
-export const LIVE_TIMEOUT_MS = 40_000
+/** /api/live: the live endpoint (a cold worker boots + loads klein in ~50 s; warm ~1-3 s), then
+ *  GX10 once. Short — the sketch will have moved on anyway. */
+export const LIVE_TIMEOUT_MS = 45_000
+export const LIVE_FALLBACK_TIMEOUT_MS = 35_000
 /** Video submit answers at once with a job id; a burst is two submits. */
 export const VIDEO_SUBMIT_TIMEOUT_MS = 30_000
 /** One status poll; a capacity_error burst adds one rented submit to the same request. */

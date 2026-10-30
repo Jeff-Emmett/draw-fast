@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
 	BROWSER_REQUEST_BUDGET_MS,
+	LIVE_FALLBACK_TIMEOUT_MS,
 	LIVE_TIMEOUT_MS,
+	MODELS,
 	LOCAL_TIMEOUT_MS,
 	RENTED_TIMEOUT_MS,
 	VIDEO_CONTENT_TIMEOUT_MS,
@@ -122,6 +124,17 @@ describe('generateImageWithBurst (contract burst rule)', () => {
 		assert.equal(m.calls.length, 1)
 	})
 
+	it('live: rented-image-live first, GX10 klein once on a 5xx, no strength sent', async () => {
+		const m = mockFetch([status(503), okImage])
+		const r = await generateImageWithBurst(cfg(m.fetch), { prompt: 'a cottage', size: '512x512', image: 'data:image/png;base64,QUJD', seed: 42 }, {
+			local: MODELS.liveImage,
+			rented: MODELS.liveFallback,
+		})
+		assert.equal(r.ok && r.model, 'local-image-klein4b')
+		assert.deepEqual(m.calls.map((c) => c.body.model), ['rented-image-live', 'local-image-klein4b'])
+		assert.equal('strength' in m.calls[0].body, false)
+	})
+
 	it('200 without an image → 502, no burst', async () => {
 		const m = mockFetch([() => Response.json({ data: [] })])
 		const r = await generateImageWithBurst(cfg(m.fetch), body)
@@ -220,7 +233,8 @@ describe('time budgets stay under Cloudflare (~100 s) with margin', () => {
 		assert.equal(BROWSER_REQUEST_BUDGET_MS, 90_000)
 		assert.ok(LOCAL_TIMEOUT_MS + RENTED_TIMEOUT_MS < BROWSER_REQUEST_BUDGET_MS, '/api/image local+rented')
 		assert.ok(LOCAL_TIMEOUT_MS >= 25_000, 'local must outlast GX10 ~20 s refusal')
-		assert.ok(LIVE_TIMEOUT_MS < BROWSER_REQUEST_BUDGET_MS, '/api/live')
+		assert.ok(LIVE_TIMEOUT_MS + LIVE_FALLBACK_TIMEOUT_MS < BROWSER_REQUEST_BUDGET_MS, '/api/live live+fallback')
+		assert.ok(LIVE_TIMEOUT_MS >= 40_000, 'live must outlast a cold worker so the next frame finds it warm')
 		assert.ok(2 * VIDEO_SUBMIT_TIMEOUT_MS < BROWSER_REQUEST_BUDGET_MS, '/api/video submit + burst submit')
 		assert.ok(VIDEO_POLL_TIMEOUT_MS + VIDEO_SUBMIT_TIMEOUT_MS < BROWSER_REQUEST_BUDGET_MS, '/api/video/:id poll + burst')
 		assert.ok(VIDEO_CONTENT_TIMEOUT_MS < BROWSER_REQUEST_BUDGET_MS, '/api/video/:id/content first byte')

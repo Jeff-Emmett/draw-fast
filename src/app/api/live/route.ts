@@ -1,9 +1,10 @@
-// Live "draw → image": debounced img2img of the current sketch.
-// LOCAL ONLY (local-image-flux): continuous sketching must never burn RunPod money, so
-// there is no rented burst here. A 503 (GX10 has no room) is passed through; the client
-// keeps its last image and retries on a later tick.
+// Live "draw → image": debounced reference edit of the current sketch (rspace TASK-1727.10).
+// FLUX.2 klein 4B takes the sketch as a reference and the prompt as the instruction, on the
+// rented-image-live endpoint that RunPod keeps warm for 2 minutes after the last frame — GX10
+// measured 6-20 s a frame, not live. On a 5xx / no answer it falls back ONCE to the same model
+// on GX10; a 4xx is surfaced. There is no strength: a reference edit has no denoise knob.
 
-import { generateImageWithBurst, LIVE_TIMEOUT_MS, MODELS } from '@/lib/gateway'
+import { generateImageWithBurst, LIVE_FALLBACK_TIMEOUT_MS, LIVE_TIMEOUT_MS, MODELS } from '@/lib/gateway'
 import { acquireSlot, config, json, limit, limiters, readJson, readPrompt, upstreamError } from '@/lib/routeHelpers'
 
 export const runtime = 'nodejs'
@@ -35,15 +36,20 @@ export async function POST(req: Request) {
 	const size = validSize(body.size)
 	const image = typeof body.image === 'string' && /^data:image\/(png|jpeg);base64,/.test(body.image) ? body.image : null
 	if (!prompt || !size || !image) return json({ error: 'Need prompt, size (WxH, 128-768, /16) and image (PNG/JPEG data URL).' }, 400)
-	const strength = typeof body.strength === 'number' ? Math.min(0.9, Math.max(0.3, body.strength)) : 0.65
 
 	const release = acquireSlot(req)
 	if (release instanceof Response) return release
 	try {
 		const r = await generateImageWithBurst(
 			cfg,
-			{ prompt, size, image, strength, seed: 42 },
-			{ local: MODELS.localImage, rented: null, localTimeoutMs: LIVE_TIMEOUT_MS, signal: req.signal }
+			{ prompt, size, image, seed: 42 },
+			{
+				local: MODELS.liveImage,
+				rented: MODELS.liveFallback,
+				localTimeoutMs: LIVE_TIMEOUT_MS,
+				rentedTimeoutMs: LIVE_FALLBACK_TIMEOUT_MS,
+				signal: req.signal,
+			}
 		)
 		if (!r.ok) return upstreamError(r.status, r.error, 'live')
 		return json({ image: `data:image/png;base64,${r.data.b64}` })

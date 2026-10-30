@@ -5,16 +5,16 @@ import { useEffect } from 'react'
 
 // Live "draw → image" on our own compute (rspace TASK-1727).
 //
-// There is no realtime LCM stream on our stack, so this is debounced img2img through
-// /api/live (local-image-flux on GX10 only — never the rented burst lane):
+// There is no realtime LCM stream on our stack, so this is a debounced reference edit through
+// /api/live (FLUX.2 klein 4B on a warm RunPod endpoint, ~1-3 s a frame; GX10 as fallback):
 //   - fires DEBOUNCE_MS after the last change to the sketch or prompt;
 //   - latest wins: a newer render aborts the one in flight (at most one per shape);
-//   - on failure (503 = GX10 busy, 429, network) the last image stays and a retry is
+//   - on failure (503 = no GPU, 429, network) the last image stays and a retry is
 //     scheduled with backoff; any new stroke resets the backoff.
 
 export type LiveImageStatus = 'idle' | 'rendering' | 'busy'
 
-const DEBOUNCE_MS = 1750
+const DEBOUNCE_MS = 700
 const MAX_SIDE = 512
 const MAX_BACKOFF_MS = 30_000
 
@@ -114,7 +114,7 @@ export function useLiveImage(shapeId: TLShapeId, { debounceMs = DEBOUNCE_MS }: {
 				const res = await fetch('/api/live', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ prompt, image, size: `${size.w}x${size.h}`, strength: 0.65 }),
+					body: JSON.stringify({ prompt, image, size: `${size.w}x${size.h}` }),
 					signal: ctrl.signal,
 				})
 				if (ctrl.signal.aborted) return
